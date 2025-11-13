@@ -242,3 +242,19 @@ input[type="checkbox"].toggle:disabled + .toggle-slider {
 input[type="checkbox"].toggle:disabled + .toggle-slider:before {
     background-color: #9CA3AF; /* gray-400 */
 }
+
+/*
+ * 8. --- (NOVO) LÓGICA DO MODO VISITANTE ---
+ */
+
+/* Adiciona a classe .is-guest ao body (via js/main.js) */
+/* Isto esconde a label do toggle (o botão) */
+.is-guest .toggle-label {
+    display: none !important;
+}
+
+/* Isto centra o nome da Carga e os pinos quando o botão desaparece */
+.is-guest .bg-gray-800 .flex.items-start.justify-between {
+    justify-content: center;
+    text-align: center;
+}
