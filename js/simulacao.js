@@ -56,8 +56,10 @@
         /**
          * A função principal que calcula o custo.
          */
+        /**
+         * A função principal que calcula o custo.
+         */
         function calcularProjecao() {
-            // Verifica se os elementos existem antes de ler
             if (!simTarifa || !simLivePotencia[0] || !simHoras[0]) {
                 console.error("Elementos da simulação não encontrados.");
                 return;
@@ -67,8 +69,6 @@
             let custoDiarioTotal = 0.0;
             
             for (let i = 0; i < 4; i++) {
-                // (MUDANÇA) Lê a potência do display (que é atualizado em tempo real)
-                // Usamos .textContent em vez de .value
                 const potenciaW = parseFloat(simLivePotencia[i].textContent) || 0; 
                 const horasDia = parseFloat(simHoras[i].value) || 0;
                 
@@ -79,14 +79,17 @@
                 }
             }
             
-            const custoMensalTotal = custoDiarioTotal * 30;
+            // --- (MUDANÇA AQUI) ---
+            // Removemos a multiplicação por 30.
+            // const custoMensalTotal = custoDiarioTotal * 30;
             
-            if(simResultadoValor) simResultadoValor.textContent = `R$ ${custoMensalTotal.toFixed(2).replace('.', ',')}`;
+            // Exibimos o Custo Diário
+            if(simResultadoValor) simResultadoValor.textContent = `R$ ${custoDiarioTotal.toFixed(2).replace('.', ',')}`;
             
-            if (custoMensalTotal > 0 && simResultadoComparativo) {
-                simResultadoComparativo.textContent = `Projeção baseada em R$ ${custoDiarioTotal.toFixed(2).replace('.', ',')} por dia.`;
+            if (custoDiarioTotal > 0 && simResultadoComparativo) {
+                simResultadoComparativo.textContent = `Este é o seu custo diário projetado.`;
             } else if (simResultadoComparativo) {
-                simResultadoComparativo.textContent = "Preencha os dados e calcule.";
+                simResultadoComparativo.textContent = "Preencha as horas e calcule.";
             }
         }
 
@@ -105,3 +108,4 @@
         carregarTarifaSalva();
     });
 })();
+
