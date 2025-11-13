@@ -1,7 +1,8 @@
 /**
  * js/realtime.js
  *
- * (v4 - Adiciona ?mode=guest para visitantes)
+ * Controlador da Aba "Tempo Real".
+ * (v4 - Corrigido o bug da Simulação e o bug do Botão Travado)
  */
 
 (function () {
@@ -33,6 +34,7 @@
     
     let db;
     try {
+        // Inicializa o Firebase (só pode ser chamado uma vez)
         if (!firebase.apps.length) {
             firebase.initializeApp(firebaseConfig);
         }
@@ -40,7 +42,7 @@
         console.log("Firebase (realtime.js) inicializado com sucesso!");
     } catch (e) {
         console.error("Erro ao inicializar o Firebase:", e);
-        if (db) { 
+        if (db) { // Se já foi inicializado, apenas pegue a instância
              db = firebase.firestore();
         } else {
             updateConnectionStatus(false);
@@ -52,12 +54,12 @@
     const LIMITE_STANDBY_W = 5;
     const LIMITE_SOBRECARGA_W_PADRAO = 1500;
     const TARIFA_PADRAO_KWH = 0.92;
+    
     let tarifaKWh = TARIFA_PADRAO_KWH;
     let limiteSobrecargaW = LIMITE_SOBRECARGA_W_PADRAO;
     let nomesCargas = ["Carga 1", "Carga 2", "Carga 3", "Carga 4", "Carga 5"];
 
     // --- 4. Seletores de Elementos da UI ---
-    // (Esta secção é idêntica à anterior)
     const statusIndicator = document.getElementById('status-indicator');
     const statusText = document.getElementById('status-text');
     const potenciaTotalValor = document.getElementById('potencia-total-valor');
@@ -75,24 +77,22 @@
         document.getElementById('config-nome-3'),
         document.getElementById('config-nome-4')
     ];
-    const simLivePotencia = [
-        document.getElementById('sim-live-potencia-1'),
-        document.getElementById('sim-live-potencia-2'),
-        document.getElementById('sim-live-potencia-3'),
-        document.getElementById('sim-live-potencia-4')
-    ];
+    
+    // (Os seletores da simulação foram movidos para dentro de 'handleRelesData' para corrigir o bug)
 
     // --- 5. Variáveis de Estado e Gráfico ---
     let powerChart = null;
     let ultimoValorPotencia = null;
-    const MAX_CHART_POINTS = 60; 
-
+    const MAX_CHART_POINTS = 60; // Mostrar 60 segundos no gráfico
 
     // --- 6. Funções Principais ---
 
+    /**
+     * Ouve o documento "live" no Firestore para dados em tempo real.
+     */
     function conectarFirebase() {
-        // ... (Esta função é idêntica à anterior)
         console.log("Conectando ao Firestore para dados ao vivo...");
+        
         db.collection('status_atual').doc('live')
             .onSnapshot((doc) => {
                 if (doc.exists) {
@@ -110,31 +110,49 @@
             });
     }
 
+    /**
+     * Processa dados gerais (potência, tensão, etc.)
+     */
     function handleGeraisData(data) {
-        // ... (Esta função é idêntica à anterior)
         if (potenciaTotalValor) potenciaTotalValor.textContent = data.potencia_total.toFixed(0);
         if (tensaoRedeValor) tensaoRedeValor.textContent = data.tensao.toFixed(1);
+        
         const potenciaEmKW = data.potencia_total / 1000.0;
         const custoPorHora = potenciaEmKW * tarifaKWh;
         const custoPorDia = custoPorHora * 24;
+
         if (custoHoraValor) custoHoraValor.textContent = custoPorHora.toFixed(2).replace('.', ',');
         if (custoDiaValor) custoDiaValor.textContent = custoPorDia.toFixed(2).replace('.', ',');
+
         const kpiPotenciaCard = potenciaTotalValor.closest('.bg-gray-800');
         if (data.potencia_total > limiteSobrecargaW) {
             kpiPotenciaCard.classList.add('bg-red-800', 'animate-pulse');
         } else {
             kpiPotenciaCard.classList.remove('bg-red-800', 'animate-pulse');
         }
+        
         if (potenciaGraficoValor) potenciaGraficoValor.textContent = data.potencia_total.toFixed(0);
         updateVariacao(data.potencia_total);
         updateChart(data.potencia_total);
     }
     
+    /**
+     * Processa dados dos relés (status, consumo individual)
+     * (ATUALIZADA COM A CORREÇÃO DA SIMULAÇÃO)
+     */
     function handleRelesData(relesData) {
         if (!Array.isArray(relesData)) return;
 
+        // (NOVO) Seletores movidos para DENTRO da função
+        // Isto corrige o bug de "null" na aba de simulação
+        const simLivePotencia = [
+            document.getElementById('sim-live-potencia-1'),
+            document.getElementById('sim-live-potencia-2'),
+            document.getElementById('sim-live-potencia-3'),
+            document.getElementById('sim-live-potencia-4')
+        ];
+
         relesData.forEach(rele => {
-            // ... (A lógica de status, consumo, etc., é idêntica) ...
             const releIndex = rele.rele - 1; 
             const statusBadge = document.getElementById(`status-rele-${rele.rele}`);
             const consumoValor = document.getElementById(`consumo-rele-${rele.rele}`);
@@ -142,33 +160,38 @@
             const correnteValor = document.getElementById(`corrente-rele-${rele.rele}`);
             const card = statusBadge ? statusBadge.closest('.bg-gray-800') : null;
             const cardTitle = card ? card.querySelector('h3') : null; 
+
             if (cardTitle) {
                 cardTitle.textContent = nomesCargas[releIndex] || `Carga ${rele.rele}`;
             }
+
             if (statusBadge && card) {
                 if (rele.status === 'ON') {
                     if (rele.consumo > 0 && rele.consumo <= LIMITE_STANDBY_W) {
                         statusBadge.textContent = 'STANDBY';
-                        statusBadge.className = 'mb-4 inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-yellow-700/50 text-yellow-300';
+                        statusBadge.className = 'status-badge mb-4 inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-yellow-700/50 text-yellow-300';
                         card.style.borderColor = 'var(--brand-cyan-light)';
                     } else {
                         statusBadge.textContent = 'ON';
-                        statusBadge.className = 'mb-4 inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-700/50 text-green-300';
+                        statusBadge.className = 'status-badge mb-4 inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-700/50 text-green-300';
                         card.style.borderColor = 'var(--brand-lime)';
                     }
                 } else {
                     statusBadge.textContent = 'OFF';
-                    statusBadge.className = 'mb-4 inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-700/50 text-red-300';
+                    statusBadge.className = 'status-badge mb-4 inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-700/50 text-red-300';
                     card.style.borderColor = 'transparent';
                 }
             }
+
             if (consumoValor) consumoValor.textContent = rele.consumo.toFixed(0);
             if (correnteValor) correnteValor.textContent = rele.corrente.toFixed(2).replace('.', ',');
+
+            // (AGORA FUNCIONA) Atualiza o campo de potência na aba de Simulação
             if (releIndex < simLivePotencia.length && simLivePotencia[releIndex]) {
                 simLivePotencia[releIndex].textContent = rele.consumo.toFixed(0);
             }
 
-            // --- (NOVA) LÓGICA DE PERMISSÃO ---
+            // --- LÓGICA DE PERMISSÃO E CORREÇÃO DO BOTÃO ---
             if (toggle) {
                 toggle.removeEventListener('change', handleToggleChange);
                 toggle.checked = (rele.status === 'ON');
@@ -178,20 +201,26 @@
                     toggle.disabled = true;
                 } else {
                     // Modo Admin: Reative o botão e adicione o listener
-                    toggle.disabled = false; 
+                    toggle.disabled = false; // <-- Correção do bug do botão (Linha 1)
                     toggle.addEventListener('change', handleToggleChange);
                 }
             }
-            // --- FIM DA LÓGICA DE PERMISSÃO ---
+            // --- FIM DA LÓGICA ---
         });
     }
 
+    /**
+     * Handler para o clique no interruptor.
+     * (ATUALIZADA COM A CORREÇÃO DO SETTIMEOUT)
+     */
     function handleToggleChange(event) {
-        // (Esta função é idêntica à v3, com o setTimeout)
         const releIndex = event.target.dataset.releIndex;
         const newState = event.target.checked ? 'ON' : 'OFF';
+        
+        // Salva o elemento do toggle
         const toggleElement = event.target;
         
+        // Desativa o toggle IMEDIATAMENTE
         toggleElement.disabled = true; 
 
         console.log(`Enviando comando para Relé ${releIndex}: ${newState}`);
@@ -202,30 +231,45 @@
             timestamp: firebase.firestore.FieldValue.serverTimestamp()
         })
         .then(() => {
+            // (NOVA LÓGICA)
+            // O comando foi enviado ao Firebase com sucesso.
+            // Agora, vamos reativar o botão após 2 segundos,
+            // quer o hardware responda ou não.
+            // Isto previne o botão de ficar travado se a maquete estiver offline.
             setTimeout(() => {
-                toggleElement.disabled = false;
-            }, 2000); 
+                // Só reativa se não estiver no modo visitante
+                if (!IS_GUEST_MODE) {
+                    toggleElement.disabled = false;
+                }
+            }, 2000); // 2 segundos (2000ms) de "cooldown"
         })
         .catch((error) => {
             console.error("Erro ao enviar comando: ", error);
+            // Se o envio ao Firebase FALHAR, reverte e reativa imediatamente.
             toggleElement.checked = !toggleElement.checked;
             toggleElement.disabled = false;
         });
     }
     
+    /**
+     * Funções da Aba de Configurações
+     */
     function carregarConfiguracoes() {
-        // ... (Esta função é idêntica à anterior)
         const tarifaSalva = localStorage.getItem('tarifaKWh');
         const limiteSalvo = localStorage.getItem('limiteSobrecargaW');
         const nomesSalvos = localStorage.getItem('nomesCargas');
+
         if (tarifaSalva) tarifaKWh = parseFloat(tarifaSalva);
         if (limiteSalvo) limiteSobrecargaW = parseFloat(limiteSalvo);
+        
         if (nomesSalvos) {
             nomesCargas = JSON.parse(nomesSalvos);
         }
+        
+        // Verifica se os elementos existem (pois podem estar em abas ocultas)
         if(configTarifaKwh) configTarifaKwh.value = tarifaKWh;
         if(configLimiteW) configLimiteW.value = limiteSobrecargaW;
-        if(configNomeInputs[0]) {
+        if(configNomeInputs[0]) { // Verifica apenas o primeiro
             configNomeInputs.forEach((input, index) => {
                 if(input) input.value = nomesCargas[index] || '';
             });
@@ -233,27 +277,33 @@
     }
 
     function salvarConfiguracoes() {
-        // ... (Esta função é idêntica à anterior)
         console.log("Salvando configurações...");
+        
         tarifaKWh = parseFloat(configTarifaKwh.value) || TARIFA_PADRAO_KWH;
         limiteSobrecargaW = parseFloat(configLimiteW.value) || LIMITE_SOBRECARGA_W_PADRAO;
+
         localStorage.setItem('tarifaKWh', tarifaKWh);
         localStorage.setItem('limiteSobrecargaW', limiteSobrecargaW);
+
         nomesCargas = configNomeInputs.map(input => input.value || '');
         localStorage.setItem('nomesCargas', JSON.stringify(nomesCargas));
+        
         alert("Configurações salvas com sucesso!");
+        
+        // Força a atualização dos nomes dos cards na aba Tempo Real
         db.collection('status_atual').doc('live').get().then(doc => {
             if (doc.exists && doc.data().reles) {
                 handleRelesData(doc.data().reles);
             }
         });
+        
+        // Volta para a tela principal
         document.querySelector('.nav-link[data-page="page-realtime"]').click();
     }
 
     // --- 7. Funções Auxiliares (Gráfico, Toggles, etc.) ---
     
     function updateConnectionStatus(isConnected) {
-        // ... (idêntica)
         if (isConnected) {
             statusIndicator.classList.remove('bg-red-500');
             statusIndicator.classList.add('bg-green-500', 'connection-pulse');
@@ -270,9 +320,9 @@
     }
     
     function inicializarChart() {
-        // ... (idêntica)
         const ctx = document.getElementById('power-chart');
         if (!ctx) return; 
+
         powerChart = new Chart(ctx, {
             type: 'line',
             data: {
@@ -301,11 +351,13 @@
     }
 
     function updateChart(valor) {
-        // ... (idêntica)
         if (!powerChart) return;
+
         const timestamp = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
         powerChart.data.labels.push(timestamp);
         powerChart.data.datasets[0].data.push(valor);
+
         if (powerChart.data.labels.length > MAX_CHART_POINTS) {
             powerChart.data.labels.shift();
             powerChart.data.datasets[0].data.shift();
@@ -314,7 +366,6 @@
     }
 
     function updateVariacao(novoValor) {
-        // ... (idêntica)
         if (!potenciaGraficoVariacao) return; 
         if (ultimoValorPotencia === null || novoValor === ultimoValorPotencia || ultimoValorPotencia === 0) {
             if (ultimoValorPotencia === null) {
@@ -324,9 +375,11 @@
             ultimoValorPotencia = novoValor;
             return;
         }
+
         const variacao = ((novoValor - ultimoValorPotencia) / ultimoValorPotencia) * 100;
         let icone, corFundo, corTexto, texto;
         texto = `${Math.abs(variacao).toFixed(0)}%`;
+
         if (variacao > 0) {
             icone = 'arrow_upward';
             corFundo = 'bg-green-700/50';
@@ -336,6 +389,7 @@
             corFundo = 'bg-red-700/50';
             corTexto = 'text-red-300';
         }
+
         potenciaGraficoVariacao.innerHTML = `<span class="material-symbols-outlined text-sm mr-1">${icone}</span><span class="text-sm font-medium">${texto}</span>`;
         potenciaGraficoVariacao.className = `flex items-center px-3 py-1.5 rounded-full ${corFundo} ${corTexto}`;
         ultimoValorPotencia = novoValor;
@@ -343,8 +397,9 @@
     
     function inicializarToggles() {
         const toggles = document.querySelectorAll('#page-realtime .toggle');
+        
+        // (NOVO) Adiciona a verificação do Modo Visitante
         toggles.forEach(toggle => {
-            // --- (NOVA) LÓGICA DE PERMISSÃO ---
             if (IS_GUEST_MODE) {
                 // Se for visitante, apenas desativa o botão
                 toggle.disabled = true;
