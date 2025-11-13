@@ -1,13 +1,12 @@
 /**
  * js/main.js
  *
- * Controlador Principal de Navegação (SPA) E Menu Mobile.
- * (v2 - Adiciona lógica de Modo Visitante)
+ * (v3 - Modo Visitante atualizado: adiciona classe ao body)
  */
 
 document.addEventListener('DOMContentLoaded', () => {
 
-    // --- (NOVO) LÓGICA DE MODO VISITANTE ---
+    // --- LÓGICA DE MODO VISITANTE (ATUALIZADA) ---
     const urlParams = new URLSearchParams(window.location.search);
     const IS_GUEST_MODE = urlParams.get('mode') === 'guest';
 
@@ -20,11 +19,15 @@ document.addEventListener('DOMContentLoaded', () => {
             linkConfig.classList.add('hidden');
         }
         
-        // 2. Esconder a secção de controlo de cargas (na aba Tempo Real)
-        const secaoControle = document.getElementById('secao-controle-cargas');
-        if (secaoControle) {
-            secaoControle.classList.add('hidden');
-        }
+        // 2. (NOVO) Adiciona a classe 'is-guest' ao BODY.
+        // O CSS irá tratar de esconder os controlos (toggles).
+        document.body.classList.add('is-guest');
+        
+        // 3. (REMOVIDO) Não escondemos mais a secção inteira
+        // const secaoControle = document.getElementById('secao-controle-cargas');
+        // if (secaoControle) {
+        //     secaoControle.classList.add('hidden');
+        // }
     }
     // --- FIM DA LÓGICA DE VISITANTE ---
 
@@ -61,30 +64,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- 5. Adiciona "Ouvintes" de Eventos ---
-
-    // Navegação principal (clicar nos links da sidebar)
     navLinks.forEach(link => {
         link.addEventListener('click', (event) => {
-            event.preventDefault(); // Impede o link de recarregar a página
+            event.preventDefault(); 
             navLinks.forEach(navLink => {
                 navLink.classList.remove('active');
             });
             link.classList.add('active');
-            
             const pageIdToShow = link.getAttribute('data-page');
             showPage(pageIdToShow);
-            
-            // Fecha o menu mobile se estiver aberto
             closeMobileMenu(); 
         });
     });
 
-    // Abrir menu com o botão hambúrguer
     if (btnMenuMobile) {
         btnMenuMobile.addEventListener('click', openMobileMenu);
     }
 
-    // Fechar menu clicando no fundo escuro (backdrop)
     if (backdrop) {
         backdrop.addEventListener('click', closeMobileMenu);
     }
