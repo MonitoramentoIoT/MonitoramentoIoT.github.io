@@ -1,7 +1,7 @@
 /**
  * js/realtime.js
  *
- * (v5 - Implementa Jitter Buffer / Fila de Reprodução)
+ * (v6 - Lógica de Jitter Buffer removida, simplificada para backend v4)
  */
 
 (function () {
@@ -48,13 +48,12 @@
     let ultimoValorPotencia = null;
     const MAX_CHART_POINTS = 60; 
 
-    // --- (NOVO) FILA DE REPRODUÇÃO (JITTER BUFFER) ---
-    let filaDeDados = []; // O buffer
-    let motorDoGrafico = null; // O timer (setInterval)
+    // --- [REMOVIDO] FILA DE REPRODUÇÃO (JITTER BUFFER) ---
+    // let filaDeDados = []; 
+    // let motorDoGrafico = null; 
     // ------------------------------------------------
 
     // --- 4. Seletores de Elementos da UI ---
-    // (Apenas os seletores globais, os outros movemos para as funções)
     const statusIndicator = document.getElementById('status-indicator');
     const statusText = document.getElementById('status-text');
     const btnSaveAllSettings = document.getElementById('btn-save-all-settings');
@@ -73,31 +72,20 @@
                     updateConnectionStatus(true);
                     const data = doc.data();
 
-                    // --- (NOVA LÓGICA DE FILA) ---
-                    // Em vez de mostrar os dados, nós os adicionamos à fila.
-
-                    // O Backend (v3) agora envia um array 'gerais' e 'reles'.
-                    // Se for um PICO, será um array de 1 item.
-                    // Se for um PACOTE, será um array de 10 itens.
-
-                    if (data.gerais && data.reles && data.gerais.length === data.reles.length) {
-                        
-                        // CASO B: PICO (Sinal > 86W)
-                        // Se for um pico, limpa a fila para mostrar o pico agora.
-                        if (data.gerais.length === 1 && data.gerais[0].potencia_total > 86) {
-                            console.log("PICO recebido! Limpando fila.");
-                            filaDeDados = []; 
-                        }
-
-                        // CASO A: PACOTE (ou PICO)
-                        // Adiciona os novos dados ao FIM da fila.
-                        for (let i = 0; i < data.gerais.length; i++) {
-                            filaDeDados.push({
-                                gerais: data.gerais[i],
-                                reles: data.reles[i]
-                            });
-                        }
+                    // --- [INÍCIO DA MODIFICAÇÃO] ---
+                    // Lógica de Fila Removida.
+                    // O backend (v4) já envia dados no formato { gerais: {OBJ}, reles: [ARR] }
+                    // e na cadência correta (10s ou instantâneo).
+                    
+                    if (data.gerais && data.reles) {
+                        // Chamamos as funções de renderização DIRETAMENTE
+                        console.log(`[Firestore] Recebido: ${data.gerais.potencia_total}W`);
+                        handleGeraisData(data.gerais);
+                        handleRelesData(data.reles);
+                    } else {
+                        console.warn("Dados recebidos, mas formato 'gerais' ou 'reles' está incorreto.");
                     }
+                    // --- [FIM DA MODIFICAÇÃO] ---
 
                 } else {
                     console.warn("Documento 'status_atual/live' não encontrado. Aguardando dados do Coletor...");
@@ -109,27 +97,12 @@
             });
     }
 
-    /**
-     * (NOVO) O "Motor" do Gráfico - Roda a cada 1 segundo
-     * Puxa 1 item da fila e o exibe, criando a fluidez.
-     */
+    // --- [REMOVIDO] O "Motor" do Gráfico ---
+    /*
     function iniciarMotorDoGrafico() {
-        if (motorDoGrafico) clearInterval(motorDoGrafico); // Limpa o timer antigo
-
-        motorDoGrafico = setInterval(() => {
-            // Tira o primeiro item (o mais antigo) da fila
-            const proximoPonto = filaDeDados.shift(); 
-
-            if (proximoPonto) {
-                // Se temos um item, mostramos ele
-                handleGeraisData(proximoPonto.gerais);
-                handleRelesData(proximoPonto.reles);
-            } else {
-                // Se a fila está vazia, não faz nada
-                // (O gráfico vai "parar" até o próximo pacote chegar)
-            }
-        }, 1000); // Roda a cada 1 segundo
+        // ...função inteira removida...
     }
+    */
 
     /**
      * Processa dados gerais (potência, tensão, etc.)
@@ -163,7 +136,7 @@
         
         if (potenciaGraficoValor) potenciaGraficoValor.textContent = data.potencia_total.toFixed(0);
         updateVariacao(data.potencia_total);
-        updateChart(data.potencia_total); // Esta função agora é chamada a cada 1s pelo "Motor"
+        updateChart(data.potencia_total);
     }
     
     /**
@@ -233,7 +206,6 @@
 
     /**
      * Handler para o clique no interruptor.
-     * (Inclui a correção do setTimeout)
      */
     function handleToggleChange(event) {
         const releIndex = event.target.dataset.releIndex;
@@ -264,7 +236,6 @@
     }
     
     function carregarConfiguracoes() {
-        // (Função idêntica à v4)
         const tarifaSalva = localStorage.getItem('tarifaKWh');
         const limiteSalvo = localStorage.getItem('limiteSobrecargaW');
         const nomesSalvos = localStorage.getItem('nomesCargas');
@@ -291,7 +262,6 @@
     }
 
     function salvarConfiguracoes() {
-        // (Função idêntica à v4)
         const configTarifaKwh = document.getElementById('config-tarifa-kwh');
         const configLimiteW = document.getElementById('config-limite-w');
         const configNomeInputs = [
@@ -309,27 +279,22 @@
         nomesCargas = configNomeInputs.map(input => input.value || '');
         localStorage.setItem('nomesCargas', JSON.stringify(nomesCargas));
         alert("Configurações salvas com sucesso!");
+
+        // --- [MODIFICADO] ---
+        // Reaplica os dados atuais para atualizar os nomes das cargas
         db.collection('status_atual').doc('live').get().then(doc => {
             if (doc.exists && doc.data().reles) {
-                // (MODIFICADO) Agora envia para a fila
-                const data = doc.data();
-                if (data.gerais.length === data.reles.length) {
-                    for (let i = 0; i < data.gerais.length; i++) {
-                        filaDeDados.push({
-                            gerais: data.gerais[i],
-                            reles: data.reles[i]
-                        });
-                    }
-                }
+                handleRelesData(doc.data().reles);
             }
         });
+        // --------------------
+
         document.querySelector('.nav-link[data-page="page-realtime"]').click();
     }
 
     // --- 7. Funções Auxiliares (Gráfico, Toggles, etc.) ---
     
     function updateConnectionStatus(isConnected) {
-        // (Função idêntica à v4)
         if (isConnected) {
             statusIndicator.classList.remove('bg-red-500');
             statusIndicator.classList.add('bg-green-500', 'connection-pulse');
@@ -346,7 +311,6 @@
     }
     
     function inicializarChart() {
-        // (Função idêntica à v4)
         const ctx = document.getElementById('power-chart');
         if (!ctx) return; 
         powerChart = new Chart(ctx, {
@@ -377,7 +341,6 @@
     }
 
     function updateChart(valor) {
-        // (Função idêntica à v4)
         if (!powerChart) return;
         const timestamp = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         powerChart.data.labels.push(timestamp);
@@ -390,7 +353,6 @@
     }
 
     function updateVariacao(novoValor) {
-        // (Função idêntica à v4)
         const potenciaGraficoVariacao = document.getElementById('potencia-grafico-variacao');
         if (!potenciaGraficoVariacao) return; 
         if (ultimoValorPotencia === null || novoValor === ultimoValorPotencia || ultimoValorPotencia === 0) {
@@ -434,7 +396,7 @@
     conectarFirebase();
     inicializarChart();
     inicializarToggles();
-    iniciarMotorDoGrafico(); // (NOVO) Liga o "motor" do gráfico
+    // --- [REMOVIDO] iniciarMotorDoGrafico(); ---
     
     if(btnSaveAllSettings) {
         btnSaveAllSettings.addEventListener('click', salvarConfiguracoes);
