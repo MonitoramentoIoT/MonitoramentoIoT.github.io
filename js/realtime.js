@@ -1,25 +1,18 @@
 /**
  * js/realtime.js
  *
- * Controlador da Aba "Tempo Real".
- * (v4 - Corrigido o bug da Simulação e o bug do Botão Travado)
+ * (v5 - Implementa Jitter Buffer / Fila de Reprodução)
  */
 
 (function () {
 
-    // --- (NOVO) LÓGICA DE PERMISSÃO ---
-    // Verifica se a URL contém "?mode=guest"
+    // --- (LÓGICA DE PERMISSÃO) ---
     const urlParams = new URLSearchParams(window.location.search);
     const IS_GUEST_MODE = urlParams.get('mode') === 'guest';
-
-    if (IS_GUEST_MODE) {
-        console.warn("Modo Visitante ATIVADO. Os controlos estão desativados.");
-    }
+    if (IS_GUEST_MODE) console.warn("Modo Visitante ATIVADO.");
     // ------------------------------------
 
-    // --- 1. Configurações e Constantes ---
-    
-    // ATENÇÃO: COLE O OBJETO de configuração que você copiou do Firebase
+    // --- 1. Configurações e Firebase ---
     const firebaseConfig = {
       apiKey: "AIzaSy...", // COLE SEU CÓDIGO AQUI
       authDomain: "monitoramento-de-energia-acef9.firebaseapp.com", // COLE SEU CÓDIGO AQUI
@@ -29,61 +22,42 @@
       appId: "1:273869054550:web:f1a3a011d3a8a5e4df11f7", // COLE SEU CÓDIGO AQUI
       measurementId: "G-RV59GZMMG1" // COLE SEU CÓDIGO AQUI
     };
-
-    // --- 2. Inicialização do Firebase ---
     
     let db;
     try {
-        // Inicializa o Firebase (só pode ser chamado uma vez)
-        if (!firebase.apps.length) {
-            firebase.initializeApp(firebaseConfig);
-        }
+        if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
         db = firebase.firestore();
-        console.log("Firebase (realtime.js) inicializado com sucesso!");
+        console.log("Firebase (realtime.js) inicializado!");
     } catch (e) {
         console.error("Erro ao inicializar o Firebase:", e);
-        if (db) { // Se já foi inicializado, apenas pegue a instância
-             db = firebase.firestore();
-        } else {
+        if (db) db = firebase.firestore();
+        else {
             updateConnectionStatus(false);
             return;
         }
     }
 
-    // --- 3. Constantes do Sistema ---
+    // --- 3. Constantes e Variáveis de Estado ---
     const LIMITE_STANDBY_W = 5;
     const LIMITE_SOBRECARGA_W_PADRAO = 1500;
     const TARIFA_PADRAO_KWH = 0.92;
-    
     let tarifaKWh = TARIFA_PADRAO_KWH;
     let limiteSobrecargaW = LIMITE_SOBRECARGA_W_PADRAO;
     let nomesCargas = ["Carga 1", "Carga 2", "Carga 3", "Carga 4", "Carga 5"];
-
-    // --- 4. Seletores de Elementos da UI ---
-    const statusIndicator = document.getElementById('status-indicator');
-    const statusText = document.getElementById('status-text');
-    const potenciaTotalValor = document.getElementById('potencia-total-valor');
-    const custoHoraValor = document.getElementById('custo-hora-valor');
-    const custoDiaValor = document.getElementById('custo-dia-valor');
-    const tensaoRedeValor = document.getElementById('tensao-rede-valor');
-    const potenciaGraficoValor = document.getElementById('potencia-grafico-valor');
-    const potenciaGraficoVariacao = document.getElementById('potencia-grafico-variacao');
-    const configTarifaKwh = document.getElementById('config-tarifa-kwh');
-    const configLimiteW = document.getElementById('config-limite-w');
-    const btnSaveAllSettings = document.getElementById('btn-save-all-settings');
-    const configNomeInputs = [
-        document.getElementById('config-nome-1'),
-        document.getElementById('config-nome-2'),
-        document.getElementById('config-nome-3'),
-        document.getElementById('config-nome-4')
-    ];
-    
-    // (Os seletores da simulação foram movidos para dentro de 'handleRelesData' para corrigir o bug)
-
-    // --- 5. Variáveis de Estado e Gráfico ---
     let powerChart = null;
     let ultimoValorPotencia = null;
-    const MAX_CHART_POINTS = 60; // Mostrar 60 segundos no gráfico
+    const MAX_CHART_POINTS = 60; 
+
+    // --- (NOVO) FILA DE REPRODUÇÃO (JITTER BUFFER) ---
+    let filaDeDados = []; // O buffer
+    let motorDoGrafico = null; // O timer (setInterval)
+    // ------------------------------------------------
+
+    // --- 4. Seletores de Elementos da UI ---
+    // (Apenas os seletores globais, os outros movemos para as funções)
+    const statusIndicator = document.getElementById('status-indicator');
+    const statusText = document.getElementById('status-text');
+    const btnSaveAllSettings = document.getElementById('btn-save-all-settings');
 
     // --- 6. Funções Principais ---
 
@@ -98,8 +72,33 @@
                 if (doc.exists) {
                     updateConnectionStatus(true);
                     const data = doc.data();
-                    if (data.gerais) handleGeraisData(data.gerais);
-                    if (data.reles) handleRelesData(data.reles);
+
+                    // --- (NOVA LÓGICA DE FILA) ---
+                    // Em vez de mostrar os dados, nós os adicionamos à fila.
+
+                    // O Backend (v3) agora envia um array 'gerais' e 'reles'.
+                    // Se for um PICO, será um array de 1 item.
+                    // Se for um PACOTE, será um array de 10 itens.
+
+                    if (data.gerais && data.reles && data.gerais.length === data.reles.length) {
+                        
+                        // CASO B: PICO (Sinal > 86W)
+                        // Se for um pico, limpa a fila para mostrar o pico agora.
+                        if (data.gerais.length === 1 && data.gerais[0].potencia_total > 86) {
+                            console.log("PICO recebido! Limpando fila.");
+                            filaDeDados = []; 
+                        }
+
+                        // CASO A: PACOTE (ou PICO)
+                        // Adiciona os novos dados ao FIM da fila.
+                        for (let i = 0; i < data.gerais.length; i++) {
+                            filaDeDados.push({
+                                gerais: data.gerais[i],
+                                reles: data.reles[i]
+                            });
+                        }
+                    }
+
                 } else {
                     console.warn("Documento 'status_atual/live' não encontrado. Aguardando dados do Coletor...");
                     updateConnectionStatus(false);
@@ -111,9 +110,39 @@
     }
 
     /**
+     * (NOVO) O "Motor" do Gráfico - Roda a cada 1 segundo
+     * Puxa 1 item da fila e o exibe, criando a fluidez.
+     */
+    function iniciarMotorDoGrafico() {
+        if (motorDoGrafico) clearInterval(motorDoGrafico); // Limpa o timer antigo
+
+        motorDoGrafico = setInterval(() => {
+            // Tira o primeiro item (o mais antigo) da fila
+            const proximoPonto = filaDeDados.shift(); 
+
+            if (proximoPonto) {
+                // Se temos um item, mostramos ele
+                handleGeraisData(proximoPonto.gerais);
+                handleRelesData(proximoPonto.reles);
+            } else {
+                // Se a fila está vazia, não faz nada
+                // (O gráfico vai "parar" até o próximo pacote chegar)
+            }
+        }, 1000); // Roda a cada 1 segundo
+    }
+
+    /**
      * Processa dados gerais (potência, tensão, etc.)
      */
     function handleGeraisData(data) {
+        // (Seletores movidos para dentro da função)
+        const potenciaTotalValor = document.getElementById('potencia-total-valor');
+        const custoHoraValor = document.getElementById('custo-hora-valor');
+        const custoDiaValor = document.getElementById('custo-dia-valor');
+        const tensaoRedeValor = document.getElementById('tensao-rede-valor');
+        const potenciaGraficoValor = document.getElementById('potencia-grafico-valor');
+        const kpiPotenciaCard = potenciaTotalValor ? potenciaTotalValor.closest('.bg-gray-800') : null;
+
         if (potenciaTotalValor) potenciaTotalValor.textContent = data.potencia_total.toFixed(0);
         if (tensaoRedeValor) tensaoRedeValor.textContent = data.tensao.toFixed(1);
         
@@ -124,27 +153,25 @@
         if (custoHoraValor) custoHoraValor.textContent = custoPorHora.toFixed(2).replace('.', ',');
         if (custoDiaValor) custoDiaValor.textContent = custoPorDia.toFixed(2).replace('.', ',');
 
-        const kpiPotenciaCard = potenciaTotalValor.closest('.bg-gray-800');
-        if (data.potencia_total > limiteSobrecargaW) {
-            kpiPotenciaCard.classList.add('bg-red-800', 'animate-pulse');
-        } else {
-            kpiPotenciaCard.classList.remove('bg-red-800', 'animate-pulse');
+        if (kpiPotenciaCard) {
+            if (data.potencia_total > limiteSobrecargaW) {
+                kpiPotenciaCard.classList.add('bg-red-800', 'animate-pulse');
+            } else {
+                kpiPotenciaCard.classList.remove('bg-red-800', 'animate-pulse');
+            }
         }
         
         if (potenciaGraficoValor) potenciaGraficoValor.textContent = data.potencia_total.toFixed(0);
         updateVariacao(data.potencia_total);
-        updateChart(data.potencia_total);
+        updateChart(data.potencia_total); // Esta função agora é chamada a cada 1s pelo "Motor"
     }
     
     /**
      * Processa dados dos relés (status, consumo individual)
-     * (ATUALIZADA COM A CORREÇÃO DA SIMULAÇÃO)
      */
     function handleRelesData(relesData) {
         if (!Array.isArray(relesData)) return;
 
-        // (NOVO) Seletores movidos para DENTRO da função
-        // Isto corrige o bug de "null" na aba de simulação
         const simLivePotencia = [
             document.getElementById('sim-live-potencia-1'),
             document.getElementById('sim-live-potencia-2'),
@@ -186,41 +213,33 @@
             if (consumoValor) consumoValor.textContent = rele.consumo.toFixed(0);
             if (correnteValor) correnteValor.textContent = rele.corrente.toFixed(2).replace('.', ',');
 
-            // (AGORA FUNCIONA) Atualiza o campo de potência na aba de Simulação
             if (releIndex < simLivePotencia.length && simLivePotencia[releIndex]) {
                 simLivePotencia[releIndex].textContent = rele.consumo.toFixed(0);
             }
 
-            // --- LÓGICA DE PERMISSÃO E CORREÇÃO DO BOTÃO ---
             if (toggle) {
                 toggle.removeEventListener('change', handleToggleChange);
                 toggle.checked = (rele.status === 'ON');
                 
                 if (IS_GUEST_MODE) {
-                    // Modo Visitante: Apenas desative o botão
                     toggle.disabled = true;
                 } else {
-                    // Modo Admin: Reative o botão e adicione o listener
-                    toggle.disabled = false; // <-- Correção do bug do botão (Linha 1)
+                    toggle.disabled = false; 
                     toggle.addEventListener('change', handleToggleChange);
                 }
             }
-            // --- FIM DA LÓGICA ---
         });
     }
 
     /**
      * Handler para o clique no interruptor.
-     * (ATUALIZADA COM A CORREÇÃO DO SETTIMEOUT)
+     * (Inclui a correção do setTimeout)
      */
     function handleToggleChange(event) {
         const releIndex = event.target.dataset.releIndex;
         const newState = event.target.checked ? 'ON' : 'OFF';
-        
-        // Salva o elemento do toggle
         const toggleElement = event.target;
         
-        // Desativa o toggle IMEDIATAMENTE
         toggleElement.disabled = true; 
 
         console.log(`Enviando comando para Relé ${releIndex}: ${newState}`);
@@ -231,45 +250,40 @@
             timestamp: firebase.firestore.FieldValue.serverTimestamp()
         })
         .then(() => {
-            // (NOVA LÓGICA)
-            // O comando foi enviado ao Firebase com sucesso.
-            // Agora, vamos reativar o botão após 2 segundos,
-            // quer o hardware responda ou não.
-            // Isto previne o botão de ficar travado se a maquete estiver offline.
             setTimeout(() => {
-                // Só reativa se não estiver no modo visitante
                 if (!IS_GUEST_MODE) {
                     toggleElement.disabled = false;
                 }
-            }, 2000); // 2 segundos (2000ms) de "cooldown"
+            }, 2000); 
         })
         .catch((error) => {
             console.error("Erro ao enviar comando: ", error);
-            // Se o envio ao Firebase FALHAR, reverte e reativa imediatamente.
             toggleElement.checked = !toggleElement.checked;
             toggleElement.disabled = false;
         });
     }
     
-    /**
-     * Funções da Aba de Configurações
-     */
     function carregarConfiguracoes() {
+        // (Função idêntica à v4)
         const tarifaSalva = localStorage.getItem('tarifaKWh');
         const limiteSalvo = localStorage.getItem('limiteSobrecargaW');
         const nomesSalvos = localStorage.getItem('nomesCargas');
-
         if (tarifaSalva) tarifaKWh = parseFloat(tarifaSalva);
         if (limiteSalvo) limiteSobrecargaW = parseFloat(limiteSalvo);
+        if (nomesSalvos) nomesCargas = JSON.parse(nomesSalvos);
         
-        if (nomesSalvos) {
-            nomesCargas = JSON.parse(nomesSalvos);
-        }
-        
-        // Verifica se os elementos existem (pois podem estar em abas ocultas)
+        const configTarifaKwh = document.getElementById('config-tarifa-kwh');
+        const configLimiteW = document.getElementById('config-limite-w');
+        const configNomeInputs = [
+            document.getElementById('config-nome-1'),
+            document.getElementById('config-nome-2'),
+            document.getElementById('config-nome-3'),
+            document.getElementById('config-nome-4')
+        ];
+
         if(configTarifaKwh) configTarifaKwh.value = tarifaKWh;
         if(configLimiteW) configLimiteW.value = limiteSobrecargaW;
-        if(configNomeInputs[0]) { // Verifica apenas o primeiro
+        if(configNomeInputs[0]) {
             configNomeInputs.forEach((input, index) => {
                 if(input) input.value = nomesCargas[index] || '';
             });
@@ -277,33 +291,45 @@
     }
 
     function salvarConfiguracoes() {
-        console.log("Salvando configurações...");
+        // (Função idêntica à v4)
+        const configTarifaKwh = document.getElementById('config-tarifa-kwh');
+        const configLimiteW = document.getElementById('config-limite-w');
+        const configNomeInputs = [
+            document.getElementById('config-nome-1'),
+            document.getElementById('config-nome-2'),
+            document.getElementById('config-nome-3'),
+            document.getElementById('config-nome-4')
+        ];
         
+        console.log("Salvando configurações...");
         tarifaKWh = parseFloat(configTarifaKwh.value) || TARIFA_PADRAO_KWH;
         limiteSobrecargaW = parseFloat(configLimiteW.value) || LIMITE_SOBRECARGA_W_PADRAO;
-
         localStorage.setItem('tarifaKWh', tarifaKWh);
         localStorage.setItem('limiteSobrecargaW', limiteSobrecargaW);
-
         nomesCargas = configNomeInputs.map(input => input.value || '');
         localStorage.setItem('nomesCargas', JSON.stringify(nomesCargas));
-        
         alert("Configurações salvas com sucesso!");
-        
-        // Força a atualização dos nomes dos cards na aba Tempo Real
         db.collection('status_atual').doc('live').get().then(doc => {
             if (doc.exists && doc.data().reles) {
-                handleRelesData(doc.data().reles);
+                // (MODIFICADO) Agora envia para a fila
+                const data = doc.data();
+                if (data.gerais.length === data.reles.length) {
+                    for (let i = 0; i < data.gerais.length; i++) {
+                        filaDeDados.push({
+                            gerais: data.gerais[i],
+                            reles: data.reles[i]
+                        });
+                    }
+                }
             }
         });
-        
-        // Volta para a tela principal
         document.querySelector('.nav-link[data-page="page-realtime"]').click();
     }
 
     // --- 7. Funções Auxiliares (Gráfico, Toggles, etc.) ---
     
     function updateConnectionStatus(isConnected) {
+        // (Função idêntica à v4)
         if (isConnected) {
             statusIndicator.classList.remove('bg-red-500');
             statusIndicator.classList.add('bg-green-500', 'connection-pulse');
@@ -320,9 +346,9 @@
     }
     
     function inicializarChart() {
+        // (Função idêntica à v4)
         const ctx = document.getElementById('power-chart');
         if (!ctx) return; 
-
         powerChart = new Chart(ctx, {
             type: 'line',
             data: {
@@ -351,13 +377,11 @@
     }
 
     function updateChart(valor) {
+        // (Função idêntica à v4)
         if (!powerChart) return;
-
         const timestamp = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
         powerChart.data.labels.push(timestamp);
         powerChart.data.datasets[0].data.push(valor);
-
         if (powerChart.data.labels.length > MAX_CHART_POINTS) {
             powerChart.data.labels.shift();
             powerChart.data.datasets[0].data.shift();
@@ -366,6 +390,8 @@
     }
 
     function updateVariacao(novoValor) {
+        // (Função idêntica à v4)
+        const potenciaGraficoVariacao = document.getElementById('potencia-grafico-variacao');
         if (!potenciaGraficoVariacao) return; 
         if (ultimoValorPotencia === null || novoValor === ultimoValorPotencia || ultimoValorPotencia === 0) {
             if (ultimoValorPotencia === null) {
@@ -375,11 +401,9 @@
             ultimoValorPotencia = novoValor;
             return;
         }
-
         const variacao = ((novoValor - ultimoValorPotencia) / ultimoValorPotencia) * 100;
         let icone, corFundo, corTexto, texto;
         texto = `${Math.abs(variacao).toFixed(0)}%`;
-
         if (variacao > 0) {
             icone = 'arrow_upward';
             corFundo = 'bg-green-700/50';
@@ -389,7 +413,6 @@
             corFundo = 'bg-red-700/50';
             corTexto = 'text-red-300';
         }
-
         potenciaGraficoVariacao.innerHTML = `<span class="material-symbols-outlined text-sm mr-1">${icone}</span><span class="text-sm font-medium">${texto}</span>`;
         potenciaGraficoVariacao.className = `flex items-center px-3 py-1.5 rounded-full ${corFundo} ${corTexto}`;
         ultimoValorPotencia = novoValor;
@@ -397,14 +420,10 @@
     
     function inicializarToggles() {
         const toggles = document.querySelectorAll('#page-realtime .toggle');
-        
-        // (NOVO) Adiciona a verificação do Modo Visitante
         toggles.forEach(toggle => {
             if (IS_GUEST_MODE) {
-                // Se for visitante, apenas desativa o botão
                 toggle.disabled = true;
             } else {
-                // Se for admin, adiciona o listener
                 toggle.addEventListener('change', handleToggleChange);
             }
         });
@@ -415,6 +434,7 @@
     conectarFirebase();
     inicializarChart();
     inicializarToggles();
+    iniciarMotorDoGrafico(); // (NOVO) Liga o "motor" do gráfico
     
     if(btnSaveAllSettings) {
         btnSaveAllSettings.addEventListener('click', salvarConfiguracoes);
